@@ -1,9 +1,11 @@
 import json
 import pandas as pd
-import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 import plotly.express as px
-import plotly.graph_objects as go
-from dash import Dash, dcc, html, Input, Output
+import dash
+from dash import dcc, html
+import dash_bootstrap_components as dbc
 
 # Load Data
 file_path = "response.json"
@@ -56,69 +58,88 @@ df['combined'] = (
 )
 
 # Compute similarity
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-
 vectorizer = TfidfVectorizer(stop_words='english')
 tfidf_matrix = vectorizer.fit_transform(df['combined'])
 similarity_matrix = cosine_similarity(tfidf_matrix)
 
-# Build Dash App
-app = Dash(__name__)
-
-app.layout = html.Div([
-    html.H1("Clinical Trials Dashboard", style={"textAlign": "center"}),
-
-    # Dropdown for selecting trial
-    html.Div([
-        html.Label("Select Trial:"),
-        dcc.Dropdown(
-            id="trial-dropdown",
-            options=[{"label": title, "value": nct_id} for nct_id, title in zip(df["NCT ID"], df["Study Title"])],
-            value=df["NCT ID"].iloc[0],
-            style={"width": "50%"}
-        )
-    ], style={"textAlign": "center"}),
-
-    # Visualization containers
-    dcc.Graph(id="field-distribution"),
-    dcc.Graph(id="similarity-heatmap"),
-    dcc.Graph(id="top-similar-trials"),
-])
-
-# Callbacks for Interactivity
-@app.callback(
-    [Output("field-distribution", "figure"),
-     Output("similarity-heatmap", "figure"),
-     Output("top-similar-trials", "figure")],
-    [Input("trial-dropdown", "value")]
+# Generate Visualizations
+# Phase Distribution
+phase_dist = df['Phases'].value_counts().head(10)
+fig1 = px.bar(
+    x=phase_dist.index,
+    y=phase_dist.values,
+    labels={"x": "Phases", "y": "Count"},
+    title="Top 10 Phases Distribution",
+    color_discrete_sequence=px.colors.sequential.Blues
 )
-def update_visuals(selected_trial):
-    # Field Distribution
-    phase_dist = df['Phases'].value_counts().head(10)
-    fig1 = px.bar(
-        x=phase_dist.index,
-        y=phase_dist.values,
-        labels={"x": "Phases", "y": "Count"},
-        title="Top 10 Phases Distribution"
-    )
+fig1.update_layout(title_x=0.5, template="simple_white")
 
-    # Similarity Heatmap
-    trial_idx = df[df["NCT ID"] == selected_trial].index[0]
-    subset = similarity_matrix[trial_idx, :10]  # Show similarity with first 10 trials
-    fig2 = px.imshow([subset], labels={"color": "Similarity Score"}, title="Similarity Heatmap")
+# Similarity Heatmap
+subset_size = min(len(df), 10)
+similarity_subset = similarity_matrix[:subset_size, :subset_size]
+fig2 = px.imshow(
+    similarity_subset,
+    labels={"color": "Similarity Score"},
+    title="Similarity Heatmap",
+    color_continuous_scale="Viridis"
+)
+fig2.update_layout(title_x=0.5, template="plotly")
 
-    # Top Similar Trials
-    similar_indices = similarity_matrix[trial_idx].argsort()[-11:-1][::-1]
-    similar_trials = df.iloc[similar_indices]
-    fig3 = px.bar(
-        x=similar_trials["Study Title"],
-        y=similarity_matrix[trial_idx, similar_indices],
-        labels={"x": "Trial", "y": "Similarity Score"},
-        title=f"Top 10 Similar Trials for {selected_trial}"
-    )
+# Top Similar Trials
+similar_trials = df.head(10)
+similar_trials['Short Title'] = similar_trials['Study Title'].apply(lambda x: x[:20] + '...' if len(x) > 20 else x)
+fig3 = px.bar(
+    x=similar_trials["Short Title"],
+    y=list(range(len(similar_trials), 0, -1)),  # Match length of x
+    labels={"x": "Trial", "y": "Similarity Rank"},
+    title="Top 10 Similar Trials",
+    color=list(range(len(similar_trials), 0, -1)),  # Match length of x
+    color_continuous_scale="Plasma"
+)
+fig3.update_layout(
+    title_x=0.5,
+    template="simple_white",
+    xaxis_tickangle=-45,  # Rotate x-axis labels for better readability
+    xaxis_title="Shortened Trial Titles"
+)
 
-    return fig1, fig2, fig3
+# Build Dash App
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.LUX])
+
+# Navbar
+navbar = dbc.NavbarSimple(
+    brand="Clinical Trials Dashboard",
+    brand_href="#",
+    color="primary",
+    dark=True
+)
+
+# Layout
+app.layout = dbc.Container([
+    navbar,
+    dbc.Row([
+        dbc.Col([
+            html.Div([
+                html.H4("Phase Distribution", className="text-center text-primary"),
+                dcc.Graph(figure=fig1)
+            ], className="p-4 bg-light rounded shadow-sm")
+        ], width=6),
+        dbc.Col([
+            html.Div([
+                html.H4("Similarity Heatmap", className="text-center text-primary"),
+                dcc.Graph(figure=fig2)
+            ], className="p-4 bg-light rounded shadow-sm")
+        ], width=6)
+    ], className="mt-4"),
+    dbc.Row([
+        dbc.Col([
+            html.Div([
+                html.H4("Top Similar Trials", className="text-center text-primary"),
+                dcc.Graph(figure=fig3)
+            ], className="p-4 bg-light rounded shadow-sm")
+        ], width=12)
+    ], className="mt-4")
+], fluid=True)
 
 # Run the app
 if __name__ == "__main__":
