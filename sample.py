@@ -2,6 +2,9 @@ import json
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+import matplotlib.pyplot as plt
+import seaborn as sns
+import shap
 
 # File paths
 file_path = "response.json"  # Replace with your file path
@@ -50,10 +53,6 @@ for study in data.get("studies", []):
 # Convert to DataFrame
 df = pd.DataFrame(trials)
 
-# Debugging: Check if NCT ID exists in both DataFrames
-print("NCT IDs in trials DataFrame:", df['NCT ID'].head())
-print("NCT IDs in eligibilities DataFrame:", eligibilities['nct_id'].head())
-
 # Merge using the correct column name
 df = df.merge(eligibilities, how="left", left_on="NCT ID", right_on="nct_id")
 
@@ -74,7 +73,7 @@ tfidf_matrix = vectorizer.fit_transform(df['combined'])
 similarity_matrix = cosine_similarity(tfidf_matrix)
 
 # Find top 10 similar trials for specific trials
-specific_trials = ["NCT00385736", "NCT00386607", "NCT03518073"]
+specific_trials = ["NCT05013879", "NCT00517179", "NCT03058679"]
 results = {}
 
 for nct_id in specific_trials:
@@ -94,3 +93,61 @@ with open(output_file, "w") as out_file:
     json.dump(results, out_file, indent=4)
 
 print(f"Results saved to {output_file}")
+
+# Step 1: Distribution of Fields
+def plot_field_distribution(df, field, title):
+    plt.figure(figsize=(10, 6))
+    df[field].value_counts().head(10).plot(kind='bar', color='skyblue')
+    plt.title(f"Top 10 {title} Distribution")
+    plt.xlabel(title)
+    plt.ylabel("Count")
+    plt.xticks(rotation=45, ha='right')
+    plt.show()
+
+# Plot distributions
+plot_field_distribution(df, 'Phases', 'Phases')
+plot_field_distribution(df, 'Conditions', 'Conditions')
+plot_field_distribution(df, 'Interventions', 'Interventions')
+
+# Step 2: Similarity Matrix Heatmap
+def plot_similarity_matrix(similarity_matrix, df, n_trials=10):
+    plt.figure(figsize=(12, 8))
+    subset = similarity_matrix[:n_trials, :n_trials]  # Subset for readability
+    sns.heatmap(subset, annot=True, cmap='coolwarm', xticklabels=df['NCT ID'][:n_trials], yticklabels=df['NCT ID'][:n_trials])
+    plt.title("Similarity Matrix Heatmap (Subset)")
+    plt.xlabel("Trials")
+    plt.ylabel("Trials")
+    plt.show()
+
+plot_similarity_matrix(similarity_matrix, df)
+
+# Step 3: Top Similarities for Specific Trials
+def plot_top_similarities(nct_id, results, title):
+    similar_trials = results.get(nct_id, [])
+    if not similar_trials:
+        print(f"No similar trials found for {nct_id}.")
+        return
+    
+    top_titles = [trial["Study Title"] for trial in similar_trials]
+    similarity_scores = [1 - idx/10 for idx in range(len(similar_trials))]  # Mock scores for demonstration
+
+    plt.figure(figsize=(10, 6))
+    sns.barplot(x=similarity_scores, y=top_titles, palette='viridis')
+    plt.title(f"Top 10 Similar Trials for {title}")
+    plt.xlabel("Similarity Score")
+    plt.ylabel("Trial Title")
+    plt.show()
+
+for nct_id in specific_trials:
+    plot_top_similarities(nct_id, results, nct_id)
+
+# Step 4: Explainability using SHAP
+def explain_similarity(tfidf_matrix, vectorizer):
+    explainer = shap.Explainer(tfidf_matrix.toarray())
+    shap_values = explainer(tfidf_matrix.toarray())
+
+    # Feature importance visualization
+    feature_names = vectorizer.get_feature_names_out()
+    shap.summary_plot(shap_values, features=tfidf_matrix.toarray(), feature_names=feature_names)
+
+explain_similarity(tfidf_matrix, vectorizer)
