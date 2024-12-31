@@ -5,7 +5,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 import plotly.express as px
 import dash
 from dash import dcc, html
+from dash.dependencies import Input, Output
 import dash_bootstrap_components as dbc
+import re
 
 # Load Data
 file_path = "response.json"
@@ -46,101 +48,130 @@ for study in data.get("studies", []):
 df = pd.DataFrame(trials)
 df = df.merge(eligibilities, how="left", left_on="NCT ID", right_on="nct_id")
 
-# Combine fields for similarity computation
-df['combined'] = (
-    df['Study Title'].fillna('') + " " +
-    df['Primary Outcome Measures'].fillna('') + " " +
-    df['Secondary Outcome Measures'].fillna('') + " " +
-    df['Conditions'].fillna('') + " " +
-    df['Interventions'].fillna('') + " " +
-    df['Phases'].fillna('') + " " +
-    df['Criteria'].fillna('')
+# Clean and preprocess the data
+def clean_text(text):
+    if pd.isnull(text):
+        return ""
+    text = re.sub(r"[^a-zA-Z0-9\s,]", "", text)
+    return text.lower().strip()
+
+columns_to_clean = [
+    "Study Title", "Primary Outcome Measures", "Secondary Outcome Measures",
+    "Conditions", "Interventions", "Phases", "Criteria"
+]
+for col in columns_to_clean:
+    df[col] = df[col].apply(clean_text)
+
+# Combine fields with weights
+weights = {
+    "Study Title": 1,
+    "Primary Outcome Measures": 1.5,
+    "Secondary Outcome Measures": 1,
+    "Conditions": 2,
+    "Interventions": 1.5,
+    "Phases": 2,
+    "Criteria": 2.5
+}
+
+df["combined"] = (
+    df["Study Title"] + " " +
+    df["Primary Outcome Measures"] + " " +
+    df["Secondary Outcome Measures"] + " " +
+    df["Conditions"] + " " +
+    df["Interventions"] + " " +
+    df["Phases"] + " " +
+    df["Criteria"]
 )
 
 # Compute similarity
-vectorizer = TfidfVectorizer(stop_words='english')
-tfidf_matrix = vectorizer.fit_transform(df['combined'])
+vectorizer = TfidfVectorizer(stop_words="english")
+tfidf_matrix = vectorizer.fit_transform(df["combined"])
 similarity_matrix = cosine_similarity(tfidf_matrix)
 
-# Generate Visualizations
-# Phase Distribution
-phase_dist = df['Phases'].value_counts().head(10)
-fig1 = px.bar(
-    x=phase_dist.index,
-    y=phase_dist.values,
-    labels={"x": "Phases", "y": "Count"},
-    title="Top 10 Phases Distribution",
-    color_discrete_sequence=px.colors.sequential.Blues
-)
-fig1.update_layout(title_x=0.5, template="simple_white")
+# Function to get top similar trials
+def get_similar_trials(nct_id, top_n=10):
+    if nct_id not in df["NCT ID"].values:
+        return []
+    index = df[df["NCT ID"] == nct_id].index[0]
+    scores = list(enumerate(similarity_matrix[index]))
+    scores = sorted(scores, key=lambda x: x[1], reverse=True)
+    similar_trials = [{"NCT ID": df.iloc[i]["NCT ID"], "Similarity": score} for i, score in scores[1:top_n+1]]
+    return similar_trials
 
-# Similarity Heatmap
-subset_size = min(len(df), 10)
-similarity_subset = similarity_matrix[:subset_size, :subset_size]
-fig2 = px.imshow(
-    similarity_subset,
-    labels={"color": "Similarity Score"},
-    title="Similarity Heatmap",
-    color_continuous_scale="Viridis"
-)
-fig2.update_layout(title_x=0.5, template="plotly")
-
-# Top Similar Trials
-similar_trials = df.head(10)
-similar_trials['Short Title'] = similar_trials['Study Title'].apply(lambda x: x[:20] + '...' if len(x) > 20 else x)
-fig3 = px.bar(
-    x=similar_trials["Short Title"],
-    y=list(range(len(similar_trials), 0, -1)),  # Match length of x
-    labels={"x": "Trial", "y": "Similarity Rank"},
-    title="Top 10 Similar Trials",
-    color=list(range(len(similar_trials), 0, -1)),  # Match length of x
-    color_continuous_scale="Plasma"
-)
-fig3.update_layout(
-    title_x=0.5,
-    template="simple_white",
-    xaxis_tickangle=-45,  # Rotate x-axis labels for better readability
-    xaxis_title="Shortened Trial Titles"
-)
-
-# Build Dash App
+# Dash App
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.LUX])
 
 # Navbar
-navbar = dbc.NavbarSimple(
-    brand="Clinical Trials Dashboard",
-    brand_href="#",
-    color="primary",
-    dark=True
+navbar = dbc.Navbar(
+    dbc.Container([
+        dbc.Row([
+            dbc.Col(html.I(className="bi bi-bar-chart-fill text-primary", style={"fontSize": "2rem"})),
+            dbc.Col(dbc.NavbarBrand("Clinical Trials Dashboard", className="ms-2 text-primary", style={"fontSize": "1.5rem"})),
+        ], align="center", className="g-0"),
+    ]), color="light", dark=False, className="mb-4"
 )
 
-# Layout
-app.layout = dbc.Container([
+# Dashboard Layout
+app.layout = html.Div([
     navbar,
-    dbc.Row([
-        dbc.Col([
-            html.Div([
-                html.H4("Phase Distribution", className="text-center text-primary"),
-                dcc.Graph(figure=fig1)
-            ], className="p-4 bg-light rounded shadow-sm")
-        ], width=6),
-        dbc.Col([
-            html.Div([
-                html.H4("Similarity Heatmap", className="text-center text-primary"),
-                dcc.Graph(figure=fig2)
-            ], className="p-4 bg-light rounded shadow-sm")
-        ], width=6)
-    ], className="mt-4"),
-    dbc.Row([
-        dbc.Col([
-            html.Div([
-                html.H4("Top Similar Trials", className="text-center text-primary"),
-                dcc.Graph(figure=fig3)
-            ], className="p-4 bg-light rounded shadow-sm")
-        ], width=12)
-    ], className="mt-4")
-], fluid=True)
+    dbc.Container([
+        # Dropdown for NCT ID selection
+        html.H3("Top Similar Trials for Specific NCT IDs", className="text-center text-primary mb-4"),
+        dcc.Dropdown(
+            id="nct-id-dropdown",
+            options=[{"label": nct, "value": nct} for nct in df["NCT ID"].unique()],
+            value=df["NCT ID"].iloc[0],
+            placeholder="Select a Clinical Trial NCT ID",
+            className="mb-4"
+        ),
+        dcc.Graph(id="similar-trials-chart", style={"height": "500px"}),
 
-# Run the app
+        # Additional EDA Visualizations
+        html.H3("Exploratory Data Analysis", className="text-center text-primary mb-4"),
+        dbc.Row([
+            dbc.Col(dcc.Graph(id="phase-distribution", style={"height": "400px"}), width=6),
+            dbc.Col(dcc.Graph(id="conditions-distribution", style={"height": "400px"}), width=6),
+        ])
+    ])
+])
+
+# Callback for Dashboard Visualizations
+@app.callback(
+    [
+        Output("similar-trials-chart", "figure"),
+        Output("phase-distribution", "figure"),
+        Output("conditions-distribution", "figure")
+    ],
+    Input("nct-id-dropdown", "value")
+)
+def update_dashboard(selected_nct_id):
+    # Similar Trials Chart
+    similar_trials = get_similar_trials(selected_nct_id, top_n=10)
+    if similar_trials:
+        df_similar = pd.DataFrame(similar_trials)
+        similar_fig = px.bar(
+            df_similar, x="NCT ID", y="Similarity", text="NCT ID",
+            title=f"Top 10 Similar Trials for {selected_nct_id}",
+            labels={"Similarity": "Similarity Score", "NCT ID": "Trial ID"}
+        )
+        similar_fig.update_traces(textangle=0)
+        similar_fig.update_layout(title_x=0.5, xaxis_tickangle=45)
+    else:
+        similar_fig = px.bar(title=f"No Similar Trials Found for {selected_nct_id}")
+
+    # Phase Distribution
+    phase_counts = df["Phases"].value_counts().head(10)
+    phase_fig = px.bar(phase_counts, x=phase_counts.index, y=phase_counts.values,
+                       labels={"x": "Phases", "y": "Count"}, title="Phase Distribution")
+    phase_fig.update_layout(title_x=0.5)
+
+    # Condition Distribution
+    condition_counts = df["Conditions"].value_counts().head(10)
+    condition_fig = px.bar(condition_counts, x=condition_counts.index, y=condition_counts.values,
+                           labels={"x": "Conditions", "y": "Count"}, title="Condition Distribution")
+    condition_fig.update_layout(title_x=0.5)
+
+    return similar_fig, phase_fig, condition_fig
+
 if __name__ == "__main__":
     app.run_server(debug=True)
